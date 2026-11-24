@@ -1,9 +1,13 @@
 # Azure Arc と Azure Monitor Agent ハンズオン
 
+![Azure VM とオンプレミス VM のログ収集とメール通知の構成](docs/images/01-architecture.png)
+
 Azure VM とオンプレミスの Windows Server から Windows イベントを収集し、Azure Monitor のアラートとメール通知を試すハンズオンです。
 Azure Portal を中心に操作し、Windows 内の設定と AMA の Proxy 指定には PowerShell / Azure CLI を使用します。
 
 Azure VM は AMA から Azure Monitor の公開エンドポイントへ直接接続します。オンプレミス VM は Connected Machine Agent（Arc Agent）と AMA のそれぞれに明示 Proxy を設定して Azure に接続します。
+
+構成図の編集用正本は [Excalidraw](docs/images/01-architecture.excalidraw) です。[SVG](docs/images/01-architecture.svg) も用意しています。
 
 ## 進め方
 
