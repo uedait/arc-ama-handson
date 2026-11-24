@@ -1,0 +1,483 @@
+#requires -Version 5.1
+# Pure helpers: loading this file performs no downloads or host/guest changes.
+Set-StrictMode -Version 2.0
+
+function Assert-NestedOfficialUri {
+    param([Parameter(Mandatory)][uri]$Uri)
+    $hosts = @('download.microsoft.com', 'software-download.microsoft.com',
+        'software-static.download.prss.microsoft.com')
+    if (-not $Uri.IsAbsoluteUri -or $Uri.Scheme -cne 'https' -or
+        $Uri.Port -ne 443 -or $Uri.UserInfo -or $Uri.Fragment -or
+        $hosts -notcontains $Uri.DnsSafeHost.ToLowerInvariant()) {
+        throw 'Only HTTPS port 443 on explicitly allowed Microsoft media hosts is accepted.'
+    }
+}
+
+function Select-NestedImage {
+    param([Parameter(Mandatory)][object[]]$Images, [string]$ImageName, [switch]$DefaultEvaluation)
+    $matches = @($Images | Where-Object {
+        ([version]$_.Version).Build -eq 20348 -and
+        $_.EditionId -match '^Server(Standard|Datacenter)(Eval)?$' -and
+        $_.InstallationType -eq 'Server' -and
+        "$($_.Architecture)" -in @('9', 'x64', 'amd64') -and
+        (-not $ImageName -or $_.ImageName -ceq $ImageName) -and
+        (-not $DefaultEvaluation -or ($_.EditionId -eq 'ServerStandardEval' -and
+            @($_.Languages | Where-Object { "$_" -match '^en-US(\s.*)?$' }).Count -gt 0))
+    })
+    if ($matches.Count -ne 1) {
+        throw 'Select exactly one WS2022 x64 Standard/Datacenter Desktop Experience image with -ImageName. No fixed index is assumed.'
+    }
+    return $matches[0]
+}
+
+function Get-NestedMedia {
+    param(
+        [Parameter(Mandatory)][uri]$DownloadUri,
+        [Parameter(Mandatory)][string]$Cache,
+        [string]$Sha256,
+        [switch]$DefaultEvaluation
+    )
+    # Caller owns and locks Cache. Never log the request or an underlying exception.
+    Assert-NestedOfficialUri $DownloadUri
+    $name = if ($DefaultEvaluation) { 'ws2022-eval-english' } else { $Sha256.ToLowerInvariant() }
+    $path = Join-Path $Cache "$name.iso"
+    $record = Join-Path $Cache "$name.media.json"
+    [void](Assert-NestedLocalPath $path)
+    [void](Assert-NestedLocalPath $record)
+    $actual = $null
+    if ($DefaultEvaluation -and (Test-Path -LiteralPath $path)) {
+        if (-not (Test-Path -LiteralPath $record -PathType Leaf)) { throw 'Media cache record missing.' }
+        $saved = Get-Content -LiteralPath $record -Raw | ConvertFrom-Json
+        if ($saved.Schema -ne 'NestedOfficialMedia-v1' -or
+            $saved.SourceUri -cne $DownloadUri.AbsoluteUri -or
+            $saved.HashMeaning -ne 'CacheIntegrityOnly' -or
+            $saved.Length -ne 5044094976 -or (Get-Item -LiteralPath $path).Length -ne $saved.Length) {
+            throw 'Media cache record conflicts. No overwrite is allowed.'
+        }
+        $Sha256 = $saved.Sha256
+    }
+    if (-not (Test-Path -LiteralPath $path)) {
+        if (Test-Path -LiteralPath $record) { throw 'Orphan media record. Inspect manually.' }
+        $partial = "$path.partial"
+        if (Test-Path -LiteralPath $partial) { throw 'Partial ISO exists. Inspect manually before retrying.' }
+        $current = $DownloadUri
+        $downloaded = $false
+        for ($hop = 0; $hop -le 5; $hop++) {
+            Assert-NestedOfficialUri $current
+            $request = [Net.HttpWebRequest]::Create($current)
+            $request.AllowAutoRedirect = $false
+            $request.UseDefaultCredentials = $false
+            $request.Credentials = $null
+            $request.Timeout = 120000
+            $request.ReadWriteTimeout = 120000
+            $response = $null
+            try {
+                $response = $request.GetResponse()
+                Assert-NestedOfficialUri $response.ResponseUri
+                $status = [int]$response.StatusCode
+                if ($status -in @(301, 302, 303, 307, 308)) {
+                    $current = [uri]::new($current, $response.Headers['Location'])
+                    Assert-NestedOfficialUri $current
+                    continue
+                }
+                if ($status -ne 200 -or ($DefaultEvaluation -and $response.ContentLength -ne 5044094976)) {
+                    throw 'Unexpected media response.'
+                }
+                $stream = [IO.File]::Open($partial, 'CreateNew', 'Write', 'None')
+                try { $response.GetResponseStream().CopyTo($stream) }
+                finally { $stream.Dispose() }
+                if ($DefaultEvaluation -and (Get-Item -LiteralPath $partial).Length -ne 5044094976) {
+                    throw 'Unexpected media length.'
+                }
+                $downloaded = $true
+                break
+            }
+            catch { throw 'Official media download failed. Inspect retained partial media.' }
+            finally {
+                try { if ($response) { $response.Dispose() } }
+                finally { $request.Abort() }
+            }
+        }
+        if (-not $downloaded) { throw 'Media redirect limit exceeded.' }
+        $actual = (Get-FileHash -LiteralPath $partial -Algorithm SHA256).Hash
+        if ($DefaultEvaluation) { $Sha256 = $actual }
+        else { Assert-NestedSha256 -Actual $actual -Expected $Sha256 }
+        Move-Item -LiteralPath $partial -Destination $path -ErrorAction Stop
+        if ($DefaultEvaluation) {
+            Save-NestedManifest $record ([ordered]@{
+                Schema = 'NestedOfficialMedia-v1'; SourceUri = $DownloadUri.AbsoluteUri
+                Sha256 = $Sha256; Length = 5044094976; HashMeaning = 'CacheIntegrityOnly'
+            })
+        }
+    }
+    [void](Assert-NestedLocalPath $path)
+    if ((Get-Item -LiteralPath $path).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+        throw 'Media reparse point rejected.'
+    }
+    if (-not $actual) { $actual = (Get-FileHash -LiteralPath $path -Algorithm SHA256).Hash }
+    Assert-NestedSha256 -Actual $actual -Expected $Sha256
+    return [pscustomobject]@{ Path = $path; Sha256 = $Sha256 }
+}
+
+function Get-NestedVmBiosGuid {
+    param([Parameter(Mandatory)][guid]$VmId)
+    if ($VmId -eq [guid]::Empty) { throw 'A non-empty VM ID is required for BIOS identity lookup.' }
+    $id = $VmId.ToString()
+    $settings = @(Get-CimInstance -Namespace 'root\virtualization\v2' `
+        -ClassName Msvm_VirtualSystemSettingData `
+        -Filter "VirtualSystemIdentifier='$id' AND VirtualSystemType='Microsoft:Hyper-V:System:Realized'" `
+        -ErrorAction Stop)
+    if ($settings.Count -ne 1 -or $settings[0].VirtualSystemIdentifier -ne $id -or
+        $settings[0].VirtualSystemType -ne 'Microsoft:Hyper-V:System:Realized') {
+        throw 'Expected exactly one current setting for the requested Hyper-V VM ID.'
+    }
+    $biosGuid = [guid]::Empty
+    if (-not [guid]::TryParse([string]$settings[0].BIOSGUID, [ref]$biosGuid) -or $biosGuid -eq [guid]::Empty) {
+        throw 'The current Hyper-V VM settings do not contain a valid BIOS GUID.'
+    }
+    return $biosGuid
+}
+
+function Test-NestedBlockedConnectError {
+    param([Parameter(Mandatory)][Management.Automation.ErrorRecord]$Failure)
+    $exception=$Failure.Exception
+    while ($exception -is [Management.Automation.RuntimeException] -and $exception.InnerException) {
+        $exception=$exception.InnerException
+    }
+    if ($exception -is [AggregateException]) {
+        $inner=@($exception.Flatten().InnerExceptions)
+        if ($inner.Count -ne 1) { return $false }
+        $exception=$inner[0]
+    }
+    return ($exception -is [Net.Sockets.SocketException] -and
+        $exception.SocketErrorCode -in @([Net.Sockets.SocketError]::AccessDenied,
+            [Net.Sockets.SocketError]::ConnectionRefused,[Net.Sockets.SocketError]::TimedOut))
+}
+
+function Invoke-NestedValidationFile {
+    [CmdletBinding(DefaultParameterSetName='Session')]
+    param(
+        [Parameter(Mandatory,ParameterSetName='Session')][Management.Automation.Runspaces.PSSession]$Session,
+        [Parameter(Mandatory,ParameterSetName='Vm')][string]$VmName,
+        [Parameter(Mandatory,ParameterSetName='Vm')][pscredential]$Credential,
+        [Parameter(Mandatory)][string]$FilePath,
+        [object[]]$Arguments=@()
+    )
+    $source=[IO.File]::ReadAllText($FilePath)
+    $definition='function Test-NestedBlockedConnectError { ' + ${function:Test-NestedBlockedConnectError}.ToString() + ' }'
+    $invoke=@{
+        ScriptBlock={
+            param($Source,$Definition,$FileArguments)
+            . ([scriptblock]::Create($Definition))
+            & ([scriptblock]::Create($Source)) @FileArguments
+        }
+        ArgumentList=@($source,$definition,$Arguments)
+        ErrorAction='Stop'
+    }
+    if ($PSCmdlet.ParameterSetName -eq 'Session') { $invoke.Session=$Session }
+    else { $invoke.VMName=$VmName; $invoke.Credential=$Credential }
+    Invoke-Command @invoke
+}
+
+function Assert-NestedContinuationLayout {
+    param(
+        [object]$Vm, [object]$State, [object[]]$Drives, [object[]]$Adapters, [object]$Disk,
+        [guid]$BiosGuid, [string]$VmName, [string]$ChildPath, [switch]$Configured
+    )
+    $recordVmId=[guid]::Empty
+    $recordBios=[guid]::Empty
+    if ($Configured) {
+        if ($State.Status -ne 'Configured' -or $State.AnswerFilesRemoved -ne $true -or
+            $State.ActivationChecked -ne $true -or $State.InternetDenyReady -ne $true) {
+            throw 'Verification requires the completed nested VM creation record.'
+        }
+    } else {
+        $failedReadiness=$State.Status -eq 'Failed' -and $State.FailureStage -eq 'PowerShellDirectReadiness'
+        $interruptedBoot=$State.Status -eq 'Booting' -and
+            [string]::IsNullOrEmpty($State.FailureStage) -and [string]::IsNullOrEmpty($State.FailureKind) -and
+            $State.AnswerFilesRemoved -eq $false -and $State.ActivationChecked -eq $false -and $State.InternetDenyReady -eq $false
+        if (-not ($failedReadiness -or $interruptedBoot)) {
+            throw 'Existing nested VM continuation requires a failed readiness or interrupted initial boot record.'
+        }
+    }
+    if ($State.VmName -ne $VmName -or $State.ChildPath -ne $ChildPath -or
+        -not [guid]::TryParse([string]$State.VmId,[ref]$recordVmId) -or $recordVmId -eq [guid]::Empty -or
+        -not [guid]::TryParse([string]$State.BiosGuid,[ref]$recordBios) -or $recordBios -eq [guid]::Empty) {
+        throw 'Existing nested VM continuation requires the matching failed connection-readiness record.'
+    }
+    if ($Vm.Name -ne $VmName -or $Vm.Id -ne $recordVmId -or $Vm.Generation -ne 2 -or
+        $Vm.State -notin @('Off','Running') -or $BiosGuid -eq [guid]::Empty -or $BiosGuid -ne $recordBios) {
+        throw 'Existing nested VM identity does not match the recorded VM and BIOS GUID.'
+    }
+    if ($Drives.Count -ne 1 -or $Drives[0].Path -ne $ChildPath -or
+        $Adapters.Count -ne 1 -or $Adapters[0].SwitchName -ne 'OptionalLab-Internal' -or
+        $Disk.Path -ne $ChildPath -or $Disk.VhdType -ne 'Differencing' -or $Disk.ParentPath -ne $State.ParentPath -or
+        ($Vm.State -eq 'Off' -and $Disk.Attached)) {
+        throw 'Existing nested VM disks or internal switch do not match the recorded layout.'
+    }
+}
+
+function New-NestedUnattendXml {
+    param(
+        [Parameter(Mandatory)][string]$ComputerName,
+        [Parameter(Mandatory)][pscredential]$Credential,
+        [string]$TimeZone = 'Tokyo Standard Time'
+    )
+    if ($ComputerName -notmatch '^[A-Za-z0-9][A-Za-z0-9-]{0,14}$' -or
+        $ComputerName -match '^[0-9]+$' -or $ComputerName.EndsWith('-')) {
+        throw 'ComputerName must be a valid 1-15 character Windows computer name.'
+    }
+    if ($Credential.UserName -cne 'Administrator') {
+        throw 'The credential username must be exactly Administrator (not a domain-qualified name).'
+    }
+    [void][TimeZoneInfo]::FindSystemTimeZoneById($TimeZone)
+    $doc = New-Object System.Xml.XmlDocument
+    $ns = 'urn:schemas-microsoft-com:unattend'
+    $root = $doc.CreateElement('unattend', $ns)
+    [void]$doc.AppendChild($root)
+    foreach ($pass in @('specialize', 'oobeSystem')) {
+        $settings = $doc.CreateElement('settings', $ns)
+        $settings.SetAttribute('pass', $pass)
+        [void]$root.AppendChild($settings)
+        $component = $doc.CreateElement('component', $ns)
+        foreach ($pair in @{
+            name = 'Microsoft-Windows-Shell-Setup'; processorArchitecture = 'amd64'
+            publicKeyToken = '31bf3856ad364e35'; language = 'neutral'; versionScope = 'nonSxS'
+        }.GetEnumerator()) { $component.SetAttribute($pair.Key, $pair.Value) }
+        [void]$settings.AppendChild($component)
+        if ($pass -eq 'specialize') {
+            foreach ($pair in @{ComputerName = $ComputerName; TimeZone = $TimeZone}.GetEnumerator()) {
+                $node = $doc.CreateElement($pair.Key, $ns)
+                $node.InnerText = $pair.Value
+                [void]$component.AppendChild($node)
+            }
+        }
+        else {
+            $accounts = $doc.CreateElement('UserAccounts', $ns)
+            $password = $doc.CreateElement('AdministratorPassword', $ns)
+            $value = $doc.CreateElement('Value', $ns)
+            # PlainText is intentional. Base64 would not encrypt an answer file.
+            $value.InnerText = $Credential.GetNetworkCredential().Password
+            [void]$password.AppendChild($value)
+            $plain = $doc.CreateElement('PlainText', $ns)
+            $plain.InnerText = 'true'
+            [void]$password.AppendChild($plain)
+            [void]$accounts.AppendChild($password)
+            [void]$component.AppendChild($accounts)
+            $oobe = $doc.CreateElement('OOBE', $ns)
+            foreach ($name in @('HideEULAPage', 'HideLocalAccountScreen', 'HideOEMRegistrationScreen',
+                'HideOnlineAccountScreens', 'HideWirelessSetupInOOBE')) {
+                $node = $doc.CreateElement($name, $ns)
+                $node.InnerText = 'true'
+                [void]$oobe.AppendChild($node)
+            }
+            $protect = $doc.CreateElement('ProtectYourPC', $ns)
+            $protect.InnerText = '3'
+            [void]$oobe.AppendChild($protect)
+            [void]$component.AppendChild($oobe)
+        }
+    }
+    return ,$doc
+}
+
+function Save-NestedManifest {
+    param([string]$Path, [object]$Value)
+    # A truncated manifest is intentionally not accepted on the next invocation.
+    [IO.File]::WriteAllText($Path, ($Value | ConvertTo-Json -Depth 6),
+        [Text.UTF8Encoding]::new($false))
+}
+
+function Protect-NestedDirectory {
+    param([string]$Path)
+    $acl = New-Object Security.AccessControl.DirectorySecurity
+    $acl.SetAccessRuleProtection($true, $false)
+    foreach ($sidText in @('S-1-5-18', 'S-1-5-32-544')) {
+        $sid = [Security.Principal.SecurityIdentifier]::new($sidText)
+        $rule = [Security.AccessControl.FileSystemAccessRule]::new(
+            $sid, 'FullControl', 'ContainerInherit,ObjectInherit', 'None', 'Allow')
+        [void]$acl.AddAccessRule($rule)
+    }
+    $acl.SetOwner([Security.Principal.SecurityIdentifier]::new('S-1-5-32-544'))
+    Set-Acl -LiteralPath $Path -AclObject $acl
+}
+
+function Assert-NestedLocalPath {
+    param([Parameter(Mandatory)][string]$Path)
+    if ($Path -notmatch '^[A-Za-z]:\\' -or $Path.Substring(2).Contains(':')) {
+        throw 'Use an absolute local drive path without alternate data streams.'
+    }
+    $full = [IO.Path]::GetFullPath($Path)
+    if ($full.Length -le 3) { throw 'A drive root cannot be used as lab storage.' }
+    if ((Get-Volume -DriveLetter $full.Substring(0, 1)).FileSystem -ne 'NTFS') {
+        throw 'Nested image and guest directories require NTFS.'
+    }
+    $cursor = $full
+    while ($cursor) {
+        if (Test-Path -LiteralPath $cursor) {
+            if ((Get-Item -LiteralPath $cursor -Force).Attributes -band [IO.FileAttributes]::ReparsePoint) {
+                throw 'Reparse points in storage paths are not supported.'
+            }
+        }
+        $cursor = [IO.Path]::GetDirectoryName($cursor)
+    }
+    return $full.TrimEnd('\')
+}
+
+function Assert-NestedSha256 {
+    param([string]$Actual, [string]$Expected)
+    if ($Expected -notmatch '^[A-Fa-f0-9]{64}$' -or
+        $Actual -notmatch '^[A-Fa-f0-9]{64}$' -or $Actual -ne $Expected) {
+        throw 'HashMismatch: media will not be used.'
+    }
+}
+
+function Get-NestedBootConnectionDecision {
+    param([System.Management.Automation.ErrorRecord]$Failure, [switch]$InitialBoot)
+    if ($InitialBoot -and (
+        $Failure.Exception -is [System.Management.Automation.Remoting.PSDirectException] -or
+        $Failure.Exception -is [System.Management.Automation.Remoting.PSRemotingTransportException] -or
+        $Failure.Exception -is [System.Management.Automation.Remoting.PSRemotingDataStructureException])) {
+        return 'InitialBootConnection'
+    }
+    $authCategories=@('SecurityError','PermissionDenied','AuthenticationError')
+    if ($Failure.CategoryInfo.Category -in $authCategories) { return 'AuthenticationCategory' }
+    $exception = $Failure.Exception
+    while ($exception) {
+        if ($exception -is [Management.Automation.RuntimeException] -and
+            $exception.ErrorRecord.CategoryInfo.Category -in $authCategories) { return 'AuthenticationCategory' }
+        foreach ($property in @('HResult','ErrorCode','NativeErrorCode')) {
+            $code = $exception.PSObject.Properties[$property]
+            if ($code -and $code.Value -is [int] -and
+                ($code.Value -band 0xffff) -in @(5,86,1326,1327,1328,1329,1330,1331,1385,1907,1909)) { return 'AuthenticationCode' }
+        }
+        if ($exception.Message -match '(?i)(credential|password).*(invalid|incorrect|reject)|(invalid|incorrect).*(credential|password)|(authentication|logon).*(fail|reject|denied)|access.*denied|unauthori[sz]ed') {
+            return 'AuthenticationMessage'
+        }
+        $exception = $exception.InnerException
+    }
+    if ($Failure.Exception -is [System.Management.Automation.Remoting.PSRemotingTransportException]) {
+        if ($Failure.Exception.Message -match 'A remote session might have ended\.') { return 'BootTransport' }
+        return 'UnclassifiedTransport'
+    }
+    if ($Failure.Exception -is [System.Management.Automation.Remoting.PSRemotingDataStructureException]) { return 'InitialBootRequired' }
+    return 'NonConnectionError'
+}
+
+function Test-NestedBootTransportError {
+    param([System.Management.Automation.ErrorRecord]$Failure, [switch]$InitialBoot)
+    return ((Get-NestedBootConnectionDecision $Failure -InitialBoot:$InitialBoot) -in @('InitialBootConnection','BootTransport'))
+}
+
+function Write-NestedDirectDiagnostic {
+    param(
+        [string]$Path, [ValidateSet('Retry','Rejected','Timeout','Opened')][string]$Status,
+        [int]$Attempt, [double]$ElapsedSeconds, [System.Management.Automation.ErrorRecord]$Failure,
+        [ValidateSet('NotEvaluated','AuthenticationCategory','AuthenticationMessage','AuthenticationCode',
+            'InitialBootConnection','BootTransport','UnclassifiedTransport','InitialBootRequired','NonConnectionError')]
+        [string]$Decision='NotEvaluated'
+    )
+    $record = [ordered]@{
+        RecordedAt=[DateTimeOffset]::UtcNow.ToString('o')
+        Status=$Status; Attempt=$Attempt; ElapsedSeconds=[math]::Round($ElapsedSeconds,3)
+        Decision=$Decision; ExceptionType=$null; HResult=$null; ErrorCode=$null; Category=$null; ExceptionChain=@()
+    }
+    if ($Failure) {
+        $record.ExceptionType=$Failure.Exception.GetType().FullName
+        $record.HResult=$Failure.Exception.HResult
+        $code=$Failure.Exception.PSObject.Properties['ErrorCode']
+        if ($code -and $code.Value -is [int]) { $record.ErrorCode=$code.Value }
+        $record.Category=[string]$Failure.CategoryInfo.Category
+        $exception=$Failure.Exception
+        while ($exception) {
+            $entry=[ordered]@{ExceptionType=$exception.GetType().FullName;HResult=$exception.HResult;ErrorCode=$null;NativeErrorCode=$null}
+            foreach ($name in @('ErrorCode','NativeErrorCode')) {
+                $code=$exception.PSObject.Properties[$name]
+                if ($code -and $code.Value -is [int]) { $entry[$name]=$code.Value }
+            }
+            $record.ExceptionChain+= $entry
+            $exception=$exception.InnerException
+        }
+    }
+    if ($Path) {
+        $record | ConvertTo-Json -Compress -Depth 5 | Add-Content -LiteralPath $Path -Encoding UTF8 -ErrorAction Stop
+    } else {
+        Write-Information ('DIRECT_READINESS:' + ($record | ConvertTo-Json -Compress -Depth 5))
+    }
+}
+
+function Wait-NestedDirect {
+    param(
+        [string]$VmName, [pscredential]$Credential,
+        [ValidateRange(1,7200)][int]$TimeoutSeconds = 1800, [switch]$InitialBoot, [string]$DiagnosticPath
+    )
+    if ($DiagnosticPath) { [void](Assert-NestedLocalPath $DiagnosticPath) }
+    $watch = [Diagnostics.Stopwatch]::StartNew()
+    $attempt = 0
+    do {
+        $remaining = $TimeoutSeconds - $watch.Elapsed.TotalSeconds
+        if ($remaining -le 0) {
+            Write-NestedDirectDiagnostic -Path $DiagnosticPath -Status Timeout -Attempt $attempt -ElapsedSeconds $watch.Elapsed.TotalSeconds
+            throw 'PowerShell Direct readiness timed out; inspect the retained VM.'
+        }
+        $attempt++
+        $pipeline = [PowerShell]::Create()
+        $keepPipeline = $false
+        $openedSession = $null
+        try {
+            [void]$pipeline.AddCommand('New-PSSession')
+            [void]$pipeline.AddParameter('VMName', $VmName)
+            [void]$pipeline.AddParameter('Credential', $Credential)
+            [void]$pipeline.AddParameter('ErrorAction', 'Stop')
+            $async = $pipeline.BeginInvoke()
+            if (-not $async.AsyncWaitHandle.WaitOne([int]($remaining * 1000))) {
+                $pipeline.Stop()
+                Write-NestedDirectDiagnostic -Path $DiagnosticPath -Status Timeout -Attempt $attempt -ElapsedSeconds $watch.Elapsed.TotalSeconds
+                throw 'PowerShell Direct readiness timed out; inspect the retained VM.'
+            }
+            $result = $null
+            $failure = $null
+            try { $result = $pipeline.EndInvoke($async) }
+            catch {
+                if ($pipeline.Streams.Error.Count -eq 0) {
+                    $reason = $pipeline.InvocationStateInfo.Reason
+                    if ($reason -is [Management.Automation.RuntimeException]) { $failure = $reason.ErrorRecord }
+                    if (-not $failure) {
+                        Write-NestedDirectDiagnostic -Path $DiagnosticPath -Status Rejected -Attempt $attempt `
+                            -ElapsedSeconds $watch.Elapsed.TotalSeconds -Failure $_
+                        throw
+                    }
+                }
+            }
+            if ($pipeline.Streams.Error.Count -gt 0) { $failure = $pipeline.Streams.Error[0] }
+            if (-not $failure) {
+                if (@($result).Count -ne 1 -or $result[0].State -ne 'Opened') {
+                    Write-NestedDirectDiagnostic -Path $DiagnosticPath -Status Rejected -Attempt $attempt -ElapsedSeconds $watch.Elapsed.TotalSeconds
+                    throw 'PowerShell Direct returned no open session.'
+                }
+                $openedSession = $result[0]
+                # Keep the creating runspace alive until the caller closes the
+                # live session. Disposing it here could invalidate the session.
+                Write-NestedDirectDiagnostic -Path $DiagnosticPath -Status Opened -Attempt $attempt -ElapsedSeconds $watch.Elapsed.TotalSeconds
+                $keepPipeline = $true
+                return [pscustomobject]@{ Session = $result[0]; Pipeline = $pipeline }
+            }
+            $decision = Get-NestedBootConnectionDecision $failure -InitialBoot:$InitialBoot
+            $retry = $decision -in @('InitialBootConnection','BootTransport')
+            $status = if ($retry) { 'Retry' } else { 'Rejected' }
+            Write-NestedDirectDiagnostic -Path $DiagnosticPath -Status $status -Attempt $attempt `
+                -ElapsedSeconds $watch.Elapsed.TotalSeconds -Failure $failure -Decision $decision
+            if (-not $retry) {
+                throw $failure
+            }
+        }
+        finally {
+            if (-not $keepPipeline) {
+                try { if ($openedSession) { Remove-PSSession -Session $openedSession -ErrorAction Stop } }
+                finally { $pipeline.Dispose() }
+            }
+        }
+        $remaining = $TimeoutSeconds - $watch.Elapsed.TotalSeconds
+        $pauseMilliseconds = [int][Math]::Floor([Math]::Min(10, [Math]::Max(0, $remaining)) * 1000)
+        if ($pauseMilliseconds -gt 0) { Start-Sleep -Milliseconds $pauseMilliseconds }
+    } while ($true)
+}
