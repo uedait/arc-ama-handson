@@ -151,23 +151,19 @@ Heartbeat は AMA が稼働していると定期的に送信されます。
 
 ### Azure VM でイベントを生成する
 
-対象 VM に Bastion などで接続し、スタートメニューから「Windows PowerShell」を管理者として開きます。次のコードは VM 内の Windows PowerShell 5.1 で実行してください。
+対象 VM に Bastion などで接続し、スタートメニューから「Windows PowerShell」を管理者として開きます。このコードは `New-EventLog` と `Write-EventLog` を使用しますので、 VM 内の Windows PowerShell 5.1 で実行してください。
 
 ```powershell
 $ErrorActionPreference = 'Stop'
-if ($PSVersionTable.PSEdition -ne 'Desktop' -or $PSVersionTable.PSVersion.Major -ne 5 -or
-    $PSVersionTable.PSVersion -lt [version]'5.1') {
-    throw 'Windows PowerShell 5.1 で実行してください。'
-}
 $identity = [Security.Principal.WindowsIdentity]::GetCurrent()
 $principal = New-Object Security.Principal.WindowsPrincipal($identity)
 if (-not $principal.IsInRole([Security.Principal.WindowsBuiltInRole]::Administrator)) {
-    throw 'Windows PowerShell を管理者として実行してください。'
+    throw 'Run Windows PowerShell as Administrator.'
 }
 $source = 'ArcAmaHandson'
 if ([Diagnostics.EventLog]::SourceExists($source) -and
     [Diagnostics.EventLog]::LogNameFromSourceName($source, '.') -ne 'Application') {
-    throw '同名のイベントソースが別のイベントログに属しています。'
+    throw 'The event source belongs to another log.'
 }
 if (-not [Diagnostics.EventLog]::SourceExists($source)) {
     New-EventLog -LogName Application -Source $source
