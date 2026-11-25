@@ -12,9 +12,8 @@
 - 対象 Windows Server を操作する管理者アカウントと、Azure Arc の登録、拡張機能の導入、DCR の関連付けができる Azure アカウントを用意してください。ログ検索には LAW の閲覧権限も必要です。
 - 明示 Proxy は、認証不要の HTTP Proxy と HTTPS CONNECT に対応したものを使用します。Proxy 側でも、Azure の通信先を名前解決し、TCP 443 で接続できる必要があります。
 - 既存のサーバーや Proxy を使う場合は、Arc、AMA、Proxy、通信許可の設定を確認してから進めてください。
-- AMA の導入には、管理端末の PowerShell 7、Azure CLI 2.75.0 以降と `connectedmachine` 拡張機能を使用します。CLI 拡張機能は `az extension add --name connectedmachine` で準備できます。
 
-この手順は Azure Portal を中心に進めます。AMA に Proxy を指定して導入する操作には、管理端末の Azure CLI を使用します。画面の項目名は今後変更になる可能性があります。
+この手順は Azure Portal を中心に進めます。Arc の登録には Portal が生成するスクリプト、AMA の導入には DCR のリソース追加を使用します。画面の項目名は今後変更になる可能性があります。
 
 ### 入力例
 
@@ -167,85 +166,19 @@ $response.StatusCode
 
 確認してみよう。Portal の状態は `Connected`、`azcmagent show` の有効な Proxy は指定した URL になっていますか。`check` の結果でも、接続先と Proxy の利用状況を見てみましょう。
 
-## 3-3. Proxy を指定して AMA を導入し、Day1 の DCR に追加する
+## 3-3. Azure Portal で AMA を導入し、Day1 の DCR に追加する
 
-AMA は拡張機能の設定に Proxy URL を明示します。Arc の管理通信と、AMA のログ収集通信に、それぞれ同じ Proxy を指定します。
-
-### 管理端末で AMA を導入する
-
-操作場所は、資料を取得した管理端末の PowerShell 7 です。リポジトリのルートへ移動し、Azure CLI に演習の Azure アカウントでサインインしてください。
-
-Tenant ID は Portal の「Microsoft Entra ID → 概要」、Subscription ID は対象サブスクリプションの「概要」で取得します。Arc のリソース名、RG、リージョンは、先ほど登録したリソースの値を使用してください。
-
-次のコードは、新しく登録した Arc サーバーへの導入用です。既存 AMA がある場合は停止するので、既存の設定を確認してから演習を進めてください。
-
-```powershell
-$ErrorActionPreference = 'Stop'
-. .\scripts\common\AzureCli.ps1
-$context = @{
-    ExpectedTenantId = '<Tenant ID>'
-    ExpectedSubscriptionId = '<Subscription ID>'
-}
-$resourceGroup = 'rg-arclab-lab'
-$machineName = 'onprem-vm01'
-$location = 'japaneast'
-$proxyUrl = 'http://10.20.0.4:3128'
-
-Assert-HandsonAzContext @context
-$targetArguments = @(
-    '--resource-group', $resourceGroup,
-    '--machine-name', $machineName,
-    '--subscription', $context.ExpectedSubscriptionId
-)
-$machine = Invoke-HandsonAz -ExpectedContext $context -Arguments @(
-    'connectedmachine', 'show', '--resource-group', $resourceGroup,
-    '--name', $machineName, '--subscription', $context.ExpectedSubscriptionId
-)
-if ($machine.location -ne $location) {
-    throw 'The Arc registration region does not match the specified region.'
-}
-$extensions = @(Invoke-HandsonAz -ExpectedContext $context -Arguments (
-    @('connectedmachine', 'extension', 'list') + $targetArguments
-))
-if (@($extensions | Where-Object { $_.name -eq 'AzureMonitorWindowsAgent' }).Count -gt 0) {
-    throw 'AMA is already installed. Review the existing proxy settings.'
-}
-
-$settings = @{ proxy = @{ mode = 'application'; address = $proxyUrl; auth = 'false' } }
-$settingsFile = Join-Path ([IO.Path]::GetTempPath()) ('arc-ama-' + [guid]::NewGuid().ToString('N') + '.json')
-try {
-    $settings | ConvertTo-Json -Depth 10 | Set-Content -LiteralPath $settingsFile -Encoding utf8NoBOM
-    $extension = Invoke-HandsonAz -ExpectedContext $context -Arguments (
-        @('connectedmachine', 'extension', 'create',
-          '--name', 'AzureMonitorWindowsAgent',
-          '--publisher', 'Microsoft.Azure.Monitor',
-          '--type', 'AzureMonitorWindowsAgent',
-          '--type-handler-version', '1.0',
-          '--auto-upgrade-minor-version', 'true',
-          '--enable-auto-upgrade', 'true',
-          '--location', $location,
-          '--settings', "@$settingsFile") + $targetArguments
-    )
-    $extension | Select-Object name, provisioningState, settings
-} finally {
-    if (Test-Path -LiteralPath $settingsFile) {
-        Remove-Item -LiteralPath $settingsFile -ErrorAction Stop
-    }
-}
-```
-
-この操作は、指定した Arc サーバーに AMA を作成します。接続先の照合と Azure CLI のエラー確認には、共通の [AzureCli.ps1](../scripts/common/AzureCli.ps1) を使用しています。
+Day1 の DCR に Arc サーバーを追加すると、Portal が AMA を導入し、DCR を関連付けます。操作場所は管理端末の Azure Portal です。
 
 ### DCR に Arc サーバーを追加する
 
-1. Portal の「モニター → 設定 → データ収集ルール」から、Day1 の `dcr-arclab-windows` を開きます。
-2. 「リソース → 追加」で、登録した Arc サーバー `onprem-vm01` を選択して追加します。
-3. リソース一覧で、Day1 の Azure VM と今回の Arc サーバーが関連付いていることを確認します。
-4. 「収集と配信」で、Day1 と同じ Application の Source `ArcAmaHandson`、EventID `9001` と、宛先 `law-arclab` を確認します。
-5. Arc サーバーの「拡張機能」で `AzureMonitorWindowsAgent` のプロビジョニング状態が「成功」になっていることを確認します。失敗した場合は、拡張機能のエラー詳細と Proxy の通信許可を確認してください。
-6. AMA 拡張機能の「JSON ビュー」で、`settings.proxy` の `mode` が `application`、`address` が今回の Proxy URL、`auth` が `false` になっていることを確認します。
+1. Portal の「Azure Arc → マシン」で、対象のオンプレミス VM `onprem-vm01` が `Connected` になっていることを確認します。
+2. 「モニター → 設定 → データ収集ルール」から、Day1 の `dcr-arclab-windows` を開きます。
+3. 「リソース → 追加」で登録した Arc サーバー `onprem-vm01` を選択し、「適用」を押します。Portal は AMA がなければ導入し、DCR を関連付けます。既存 AMA がある場合は、その設定も確認してください。
+4. リソース一覧で、Day1 の Azure VM と今回の Arc サーバーが関連付いていることを確認します。
+6. Arc サーバーの「拡張機能」で、`AzureMonitorWindowsAgent` のプロビジョニング状態が「成功」になるまで待ちます。失敗した場合は、拡張機能のエラー詳細、Arc の接続状態と Proxy の通信許可を確認してください。
 
-確認してみよう。Arc と AMA に同じ Proxy URL が設定され、Day1 の DCR に2台の収集元が表示されていますか。
+確認してみよう。AMA の導入状態は「成功」、Day1 の DCR には2台の収集元が表示されていますか。
 
 ## 3-4. オンプレミス VM の Heartbeat を確認する
 
@@ -328,7 +261,6 @@ Event
 
 Day1 のイベントが30分より前の場合は、Azure VM でも新しいイベントを生成してから見比べてください。Azure VM は `Microsoft.Compute/virtualMachines`、オンプレミス VM は `Microsoft.HybridCompute/machines` のリソース ID で区別できます。
 
-通信設定も見比べてみましょう。Azure VM の AMA は直接接続、オンプレミス VM の Arc と AMA はそれぞれに設定した Proxy を使用します。ログの到着に加えて、`azcmagent show` / `check` と AMA の拡張機能設定を確認してください。実際の接続先も見たい場合は、お客様が利用できる Proxy の接続ログで、対象サーバーの送信元と時刻を絞って確認できます。
 
 ## 公式資料
 
@@ -337,5 +269,4 @@ Day1 のイベントが30分より前の場合は、Azure VM でも新しいイ�
 - [Portal による Arc 登録](https://learn.microsoft.com/azure/azure-arc/servers/onboard-portal)
 - [Arc Agent の Proxy 設定](https://learn.microsoft.com/azure/azure-arc/servers/manage-agent-proxy-settings)
 - [AMA のネットワークと Proxy 設定](https://learn.microsoft.com/azure/azure-monitor/agents/azure-monitor-agent-network-configuration)
-- [Azure CLI による Arc 拡張機能の管理](https://learn.microsoft.com/cli/azure/connectedmachine/extension)
 - [DCR のリソース追加](https://learn.microsoft.com/azure/azure-monitor/vm/data-collection)

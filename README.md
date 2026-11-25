@@ -3,9 +3,9 @@
 ![Azure VM とオンプレミス VM のログ収集とメール通知の構成](docs/images/01-architecture.png)
 
 Azure VM とオンプレミスの Windows Server から Windows イベントを収集し、Azure Monitor のアラートとメール通知を試すハンズオンです。
-Azure Portal を中心に操作し、Windows 内の設定と AMA の Proxy 指定には PowerShell / Azure CLI を使用します。
+Azure Portal を中心に操作し、Windows 内の設定と Arc の登録には PowerShell を使用します。Step0 の検証環境構築では Azure CLI も使用します。
 
-Azure VM は AMA から Azure Monitor の公開エンドポイントへ直接接続します。オンプレミス VM は Connected Machine Agent（Arc Agent）と AMA のそれぞれに明示 Proxy を設定して Azure に接続します。
+Azure VM は AMA から Azure Monitor の公開エンドポイントへ直接接続します。オンプレミス VM は Connected Machine Agent（Arc Agent）に明示 Proxy を設定し、AMA を Azure Portal から導入してログ収集を設定します。
 
 構成図の編集用正本は [Excalidraw](docs/images/01-architecture.excalidraw) です。[SVG](docs/images/01-architecture.svg) も用意しています。
 
