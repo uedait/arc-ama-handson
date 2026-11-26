@@ -1,0 +1,12 @@
+# Temporary additions for arcama-workload in rg-arcama-lab.
+# Workspace: law-arcama / Region: japaneast
+# IPv4 answers observed at 2026-11-26T05:38:11Z.
+# Re-resolve before applying. Public IP addresses can change.
+# Append to the existing hosts file; do not replace its contents.
+# Remove these additions after testing. Hosts entries do not expire.
+
+4.150.240.10    management.azure.com
+40.64.132.130   global.handler.control.monitor.azure.com
+20.43.64.69     japaneast.handler.control.monitor.azure.com
+40.79.194.118   680b2bdc-f503-46f5-a09f-06470e5695cc.ods.opinsights.azure.com
+40.77.24.27     global.prod.microsoftmetrics.com

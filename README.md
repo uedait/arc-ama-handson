@@ -16,12 +16,13 @@ Azure VM は AMA から Azure Monitor の公開エンドポイントへ直接接
 | [Step0：検証環境の構築](docs/01-lab.md) | スクリプトで Azure VM、疑似オンプレミス VM、DNS、Firewall、Bastion を準備する。既存環境があれば省略できる | 講師・検証者 | 事前準備 |
 | [Step1：Azure VM のログ収集](docs/02-azure.md) | LAW、DCR、AMA、送信許可を設定し、イベントの収集、アラート、メール通知を試す | Azure 環境の担当者 | Day1 |
 | [Step2：オンプレミス VM のログ収集](docs/03-onpremises.md) | 明示 Proxy、Arc、AMA を設定し、Day1 の収集先とアラート規則で同じ演習を行う | オンプレミスと Azure の担当者 | Day2 |
-| [4. オプション](docs/04-optional.md) | 監視用 RG の予算アラートを設定する、または Azure VM とオンプレミス VM の監視情報をワークブックで可視化する | Azure・オンプレミスの運用担当者、コスト管理の担当者 | 任意。演習ごとに前提が異なる |
+| [4. オプション](docs/04-optional.md) | 予算アラート、監視ワークブック、DNS サーバーを変更できない場合の一時的な hosts 設定を試す | Azure・オンプレミスの運用担当者、コスト管理の担当者 | 任意。演習ごとに前提が異なる |
 
 Step0 で環境を準備し、Day1 は Step1、Day2 は Step2 の順に進めてください。
 既存の Azure VM、オンプレミス VM と Proxy を使う場合は、Step1 から始められます。
 Day1 の LAW、DCR、アラート規則、アクショングループは Day2 でも使用します。
 予算アラートは監視用 RG の作成後、ワークブックは Step1 と Step2 の完了後に実施できます。予算アラートは費用を通知するもので、リソースや課金を自動停止するものではありません。
+hosts の演習は Step1 の LAW 作成後、対象 Azure VM の名前解決を補う場合に実施できます。
 
 ## このハンズオンで確かめること
 
