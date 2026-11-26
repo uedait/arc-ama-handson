@@ -321,6 +321,10 @@ Day2 では今回の LAW、DCR、アラート規則、アクショングルー�
 
 Day2 でも、LAW 全体の共通イベントを `Computer` ごとに検知する今回のアラート規則をそのまま使用します。
 
+## Optional：監視コストの予算アラート
+
+監視用 RG の費用も確認したい場合は、[Optional：監視リソースグループの予算アラート](04-optional-budget.md)を実施してください。月次予算と実績・予測のメール通知を設定します。既定の `rg-arclab-lab` を対象にすると、監視以外のリソース費用も含まれます。
+
 ## 公式資料
 
 - [AMA のネットワーク構成](https://learn.microsoft.com/azure/azure-monitor/agents/azure-monitor-agent-network-configuration)
