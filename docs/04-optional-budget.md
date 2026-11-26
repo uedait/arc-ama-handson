@@ -1,6 +1,6 @@
 # Optional：監視リソースグループの予算アラート
 
-[README](../README.md) | [Step1：Azure VM のログ収集](02-azure.md) | [Step2：オンプレミス VM のログ収集](03-onpremises.md)
+[4. オプション](04-optional.md) | [README](../README.md) | [Step1：Azure VM のログ収集](02-azure.md) | [Step2：オンプレミス VM のログ収集](03-onpremises.md)
 
 LAW、DCR、アラート規則などを配置した監視用リソースグループ（RG）に、Azure Cost Management の予算とメール通知を設定します。監視の運用では、障害の検知に加えて、ログ量の増加などによるコストの変化も確認します。
 
