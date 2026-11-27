@@ -3,9 +3,82 @@
   "items": [
     {
       "type": 1,
-      "name": "overview",
+      "name": "intro",
       "content": {
-        "json": "# Azure VM と Arc マシンの監視\n「概要」で要確認の VM を見つけ、各タブで詳しく確認します。"
+        "json": "# Azure VM と Azure Arc の監視\n期間と検索先のワークスペースを選び、監視したい Azure VM または Arc マシンにチェックを入れます。初期状態ではマシンを選択していません。複数選択できます。"
+      }
+    },
+    {
+      "type": 9,
+      "name": "scope",
+      "content": {
+        "version": "KqlParameterItem/1.0",
+        "style": "above",
+        "queryType": 1,
+        "resourceType": "microsoft.resourcegraph/resources",
+        "parameters": [
+          {
+            "id": "fd7347a4-e23e-4084-b7b9-2083c4b99435",
+            "version": "KqlParameterItem/1.0",
+            "name": "TimeRange",
+            "label": "期間",
+            "type": 4,
+            "isRequired": true,
+            "value": {"durationMs": 86400000},
+            "typeSettings": {"selectableValues": [{"durationMs": 3600000}, {"durationMs": 21600000}, {"durationMs": 86400000}, {"durationMs": 259200000}, {"durationMs": 604800000}]}
+          },
+          {
+            "id": "cb9c4110-d91c-4caa-a2e4-f125e3dc2563",
+            "version": "KqlParameterItem/1.0",
+            "name": "Subscription",
+            "label": "サブスクリプション",
+            "type": 6,
+            "isRequired": true,
+            "queryType": 1,
+            "resourceType": "microsoft.resourcegraph/resources",
+            "crossComponentResources": ["value::all"],
+            "typeSettings": {"additionalResourceOptions": [], "showDefault": false},
+            "query": "ResourceContainers\n| where type =~ 'microsoft.resources/subscriptions'\n| project value=subscriptionId, label=name\n| order by label asc"
+          },
+          {
+            "id": "d703b92d-bacd-4a2d-af47-894ae4d301cc",
+            "version": "KqlParameterItem/1.0",
+            "name": "Workspace",
+            "label": "Log Analytics ワークスペース",
+            "type": 5,
+            "isRequired": true,
+            "queryType": 1,
+            "resourceType": "microsoft.resourcegraph/resources",
+            "crossComponentResources": ["{Subscription}"],
+            "typeSettings": {"additionalResourceOptions": [], "showDefault": false},
+            "query": "Resources\n| where type =~ 'microsoft.operationalinsights/workspaces'\n| project value=id, label=strcat(name, ' (', resourceGroup, ')')\n| order by label asc"
+          },
+          {
+            "id": "9eac3ee2-ecc1-4d4a-8303-fda251a93edc",
+            "version": "KqlParameterItem/1.0",
+            "name": "Machines",
+            "label": "Azure VM・Arc マシン",
+            "type": 2,
+            "isRequired": true,
+            "multiSelect": true,
+            "value": ["__no_machine__"],
+            "quote": "'",
+            "delimiter": ",",
+            "queryType": 1,
+            "resourceType": "microsoft.resourcegraph/resources",
+            "crossComponentResources": ["{Subscription}"],
+            "query": "Resources\n| where type in~ ('microsoft.compute/virtualmachines', 'microsoft.hybridcompute/machines')\n| extend group=iff(type =~ 'microsoft.compute/virtualmachines', 'Azure VM', 'Azure Arc')\n| project value=id, label=strcat(name, ' (', resourceGroup, ')'), selected=false, group\n| union (ResourceContainers | where type =~ 'microsoft.resources/subscriptions' | take 1 | project value='__no_machine__', label='未選択', selected=true, group='')\n| order by selected desc, label asc"
+          },
+          {
+            "id": "c0f7a498-224b-4895-8e61-0a608573e431",
+            "version": "KqlParameterItem/1.0",
+            "name": "Section",
+            "type": 1,
+            "isGlobal": true,
+            "isHiddenWhenLocked": true,
+            "value": "summary"
+          }
+        ]
       }
     },
     {
@@ -15,237 +88,275 @@
         "version": "LinkItem/1.0",
         "style": "tabs",
         "links": [
-          { "cellValue": "Section", "linkTarget": "parameter", "linkLabel": "概要", "subTarget": "summary", "style": "link" },
-          { "cellValue": "Section", "linkTarget": "parameter", "linkLabel": "性能", "subTarget": "performance", "style": "link" },
-          { "cellValue": "Section", "linkTarget": "parameter", "linkLabel": "イベント・アラート", "subTarget": "signals", "style": "link" },
-          { "cellValue": "Section", "linkTarget": "parameter", "linkLabel": "構成", "subTarget": "inventory", "style": "link" }
+          {"cellValue": "Section", "linkTarget": "parameter", "linkLabel": "概要", "subTarget": "summary", "style": "link"},
+          {"cellValue": "Section", "linkTarget": "parameter", "linkLabel": "性能", "subTarget": "performance", "style": "link"},
+          {"cellValue": "Section", "linkTarget": "parameter", "linkLabel": "イベント・アラート", "subTarget": "signals", "style": "link"},
+          {"cellValue": "Section", "linkTarget": "parameter", "linkLabel": "構成", "subTarget": "inventory", "style": "link"}
         ]
       }
     },
     {
       "type": 3,
       "name": "vm-summary",
-      "customWidth": "67",
-      "conditionalVisibility": { "parameterName": "Section", "comparison": "isEqualTo", "value": "summary" },
+      "conditionalVisibility": {"parameterName": "Section", "comparison": "isEqualTo", "value": "summary"},
       "content": {
         "version": "KqlItem/1.0",
-        "title": "VM ごとの確認状況",
-        "size": 4,
-        "query": "let Targets = datatable(Environment:string, Id:string) ['Azure', 'AZURE_VM_RESOURCE_ID', 'Arc', 'ARC_VM_RESOURCE_ID'] | extend Key=tolower(Id), VM=tostring(split(Id, '/')[-1]);\nlet Heartbeats = Heartbeat | where _ResourceId in~ ('AZURE_VM_RESOURCE_ID', 'ARC_VM_RESOURCE_ID') | summarize LastHeartbeat=max(TimeGenerated) by Key=tolower(_ResourceId);\nlet Performance = union isfuzzy=true Perf, (datatable(TimeGenerated:datetime, _ResourceId:string, ObjectName:string, CounterName:string, InstanceName:string, CounterValue:real) [])\n| where TimeGenerated >= ago(5m) and _ResourceId in~ ('AZURE_VM_RESOURCE_ID', 'ARC_VM_RESOURCE_ID')\n| summarize Cpu=avgif(CounterValue, ObjectName =~ 'Processor Information' and CounterName =~ '% Processor Time' and InstanceName =~ '_Total'), FreeMiB=avgif(CounterValue, ObjectName =~ 'Memory' and CounterName =~ 'Available Bytes') / 1048576.0 by Key=tolower(_ResourceId);\nlet Events = Event | where _ResourceId in~ ('AZURE_VM_RESOURCE_ID', 'ARC_VM_RESOURCE_ID') | summarize Events24h=count() by Key=tolower(_ResourceId);\nTargets\n| join kind=leftouter Heartbeats on Key\n| join kind=leftouter Performance on Key\n| join kind=leftouter Events on Key\n| extend HeartbeatMinutes=tolong((now() - LastHeartbeat) / 1m)\n| extend Attention=case(HeartbeatMinutes >= 10 or Cpu >= 80.0 or FreeMiB < 512.0, '要確認', isnull(LastHeartbeat) or isnan(Cpu) or isnan(FreeMiB) or isnull(Cpu) or isnull(FreeMiB), '未受信あり', '目安内')\n| order by Environment desc\n| project VM=strcat(Environment, ': ', VM), ['確認状況']=Attention, ['HB 経過分']=HeartbeatMinutes, ['CPU (%)']=iff(isnan(Cpu), real(null), round(Cpu, 1)), ['空き (MiB)']=iff(isnan(FreeMiB), real(null), round(FreeMiB, 0)), ['イベント']=coalesce(Events24h, tolong(0))",
+        "title": "監視対象の状態",
+        "query": "let Targets = print Selected=pack_array({Machines}) | mv-expand Selected to typeof(string) | where Selected startswith '/subscriptions/' | project Key=tolower(Selected);\nlet HB = Heartbeat | where _ResourceId in~ ({Machines}) | summarize LastHeartbeat=max(TimeGenerated) by Key=tolower(_ResourceId);\nlet Performance = union isfuzzy=true Perf, (datatable(TimeGenerated:datetime, _ResourceId:string, ObjectName:string, CounterName:string, InstanceName:string, CounterValue:real) [])\n| where TimeGenerated >= ago(5m) and _ResourceId in~ ({Machines})\n| summarize CPU=avgif(CounterValue, ObjectName =~ 'Processor Information' and CounterName =~ '% Processor Time' and InstanceName =~ '_Total'), FreeMiB=avgif(CounterValue, ObjectName =~ 'Memory' and CounterName =~ 'Available Bytes') / 1048576.0 by Key=tolower(_ResourceId);\nlet Events = union isfuzzy=true Event, (datatable(_ResourceId:string) []) | where _ResourceId in~ ({Machines}) | summarize Events=count() by Key=tolower(_ResourceId);\nTargets\n| join kind=leftouter HB on Key\n| join kind=leftouter Performance on Key\n| join kind=leftouter Events on Key\n| extend Minutes=tolong((now()-LastHeartbeat)/1m)\n| extend Situation=case(Minutes >= 10 or CPU >= 80.0 or FreeMiB < 512.0, '要確認', isnull(LastHeartbeat) or isnull(CPU) or isnull(FreeMiB) or isnan(CPU) or isnan(FreeMiB), '未受信あり', '目安内')\n| project ['マシン']=tostring(split(Key, '/')[-1]), ['リソースグループ']=tostring(split(Key, '/')[4]), ['種類']=iff(Key contains '/microsoft.hybridcompute/', 'Arc', 'Azure VM'), ['確認状況']=Situation, ['最終 Heartbeat']=LastHeartbeat, ['経過分']=Minutes, ['CPU (%)']=iff(isnan(CPU), real(null), round(CPU, 1)), ['空きメモリ (MiB)']=iff(isnan(FreeMiB), real(null), round(FreeMiB, 0)), ['Event 件数']=coalesce(Events, tolong(0))\n| order by ['マシン'] asc",
         "queryType": 0,
         "resourceType": "microsoft.operationalinsights/workspaces",
-        "crossComponentResources": ["LAW_RESOURCE_ID"],
-        "timeContext": { "durationMs": 86400000 },
+        "crossComponentResources": ["{Workspace}"],
+        "timeContextFromParameter": "TimeRange",
         "visualization": "table",
-        "gridSettings": {
-          "formatters": [
-            {
-              "columnMatch": "確認状況",
-              "formatter": 18,
-              "formatOptions": {
-                "thresholdsOptions": "icons",
-                "thresholdsGrid": [
-                  { "operator": "==", "thresholdValue": "要確認", "representation": "4", "text": "{0}{1}" },
-                  { "operator": "==", "thresholdValue": "未受信あり", "representation": "2", "text": "{0}{1}" },
-                  { "operator": "Default", "thresholdValue": null, "representation": "success", "text": "{0}{1}" }
-                ]
-              }
-            }
-          ]
-        }
-      }
-    },
-    {
-      "type": 3,
-      "name": "alert-summary",
-      "customWidth": "33",
-      "conditionalVisibility": { "parameterName": "Section", "comparison": "isEqualTo", "value": "summary" },
-      "content": {
-        "version": "KqlItem/1.0",
-        "title": "関連アラート：過去24時間に発生",
-        "size": 4,
-        "query": "alertsmanagementresources\n| where type =~ 'microsoft.alertsmanagement/alerts'\n| extend StartedAt=todatetime(properties.essentials.startDateTime), Target=tostring(properties.essentials.targetResource), Rule=tostring(properties.essentials.alertRule), Condition=tostring(properties.essentials.monitorCondition)\n| where StartedAt >= ago(24h)\n| where Target in~ ('LAW_RESOURCE_ID', 'AZURE_VM_RESOURCE_ID', 'ARC_VM_RESOURCE_ID')\n| where name =~ 'alert-arclab-event9001' or Rule endswith '/alert-arclab-event9001'\n| summarize ['発生中']=countif(Condition =~ 'Fired'), ['解決済み']=countif(Condition =~ 'Resolved')",
-        "queryType": 1,
-        "resourceType": "microsoft.resourcegraph/resources",
-        "crossComponentResources": ["/subscriptions/LAB_SUBSCRIPTION_ID"],
-        "visualization": "table",
-        "gridSettings": {
-          "formatters": [
-            {
-              "columnMatch": "発生中",
-              "formatter": 18,
-              "formatOptions": {
-                "thresholdsOptions": "icons",
-                "thresholdsGrid": [
-                  { "operator": ">", "thresholdValue": "0", "representation": "4", "text": "{0}{1}" },
-                  { "operator": "Default", "thresholdValue": null, "representation": "success", "text": "{0}{1}" }
-                ]
-              }
-            }
-          ]
-        }
+        "noDataMessage": "上の選択欄から監視するマシンを選んでください。",
+        "gridSettings": {"filter": true}
       }
     },
     {
       "type": 1,
-      "name": "summary-legend",
-      "conditionalVisibility": { "parameterName": "Section", "comparison": "isEqualTo", "value": "summary" },
+      "name": "summary-help",
+      "conditionalVisibility": {"parameterName": "Section", "comparison": "isEqualTo", "value": "summary"},
+      "content": {"json": "CPU と空きメモリは直近5分の平均です。Heartbeat が10分以上前、CPU が80%以上、または空きメモリが512 MiB未満なら「要確認」と表示します。空欄は選択したワークスペースで未受信です。"}
+    },
+    {
+      "type": 3,
+      "name": "alert-summary",
+      "conditionalVisibility": {"parameterName": "Section", "comparison": "isEqualTo", "value": "summary"},
       "content": {
-        "json": "**要確認の目安**：Heartbeat が10分以上前、直近5分の CPU 平均が80%以上、または空きメモリの平均が512 MiB未満。空欄はデータ未受信です。イベント件数は過去24時間の取り込み件数です。"
+        "version": "KqlItem/1.0",
+        "title": "アラート件数：対象スコープ別",
+        "query": "alertsmanagementresources\n| where type =~ 'microsoft.alertsmanagement/alerts'\n| extend StartedAt=todatetime(properties.essentials.startDateTime), Target=tostring(properties.essentials.targetResource), Condition=tostring(properties.essentials.monitorCondition)\n| where StartedAt {TimeRange:query}\n| where Target =~ '{Workspace}' or Target in~ ({Machines})\n| extend Scope=iff(Target =~ '{Workspace}', 'ワークスペース全体', '選択したマシン')\n| summarize ['発生中']=countif(Condition =~ 'Fired'), ['解決済み']=countif(Condition =~ 'Resolved') by ['対象']=Scope",
+        "queryType": 1,
+        "resourceType": "microsoft.resourcegraph/resources",
+        "crossComponentResources": ["{Subscription}"],
+        "visualization": "table",
+        "noDataMessage": "選択した期間・対象のアラートはありません。"
       }
     },
     {
       "type": 3,
-      "name": "heartbeat",
-      "conditionalVisibility": { "parameterName": "Section", "comparison": "isEqualTo", "value": "performance" },
+      "name": "performance-ranking",
+      "conditionalVisibility": {"parameterName": "Section", "comparison": "isEqualTo", "value": "performance"},
       "content": {
         "version": "KqlItem/1.0",
-        "title": "2台の最新の Heartbeat",
-        "size": 4,
-        "query": "Heartbeat\n| where _ResourceId in~ (\"AZURE_VM_RESOURCE_ID\", \"ARC_VM_RESOURCE_ID\")\n| summarize arg_max(TimeGenerated, Computer) by ResourceId = tolower(_ResourceId)\n| project Computer, ['環境'] = iff(ResourceId =~ \"ARC_VM_RESOURCE_ID\", \"オンプレミス (Arc)\", \"Azure\"), ['最終ハートビート'] = TimeGenerated, ['経過分'] = datetime_diff('minute', now(), TimeGenerated)\n| order by ['環境'] asc",
+        "title": "VM 別の性能：平均 CPU 使用率順",
+        "query": "union isfuzzy=true Perf, (datatable(_ResourceId:string, ObjectName:string, CounterName:string, InstanceName:string, CounterValue:real) [])\n| where _ResourceId in~ ({Machines})\n| where (ObjectName =~ 'Processor Information' and CounterName =~ '% Processor Time' and InstanceName =~ '_Total') or (ObjectName =~ 'Memory' and CounterName =~ 'Available Bytes') or (ObjectName =~ 'LogicalDisk' and CounterName =~ 'Disk Bytes/sec' and InstanceName =~ '_Total')\n| summarize CPU=avgif(CounterValue, CounterName =~ '% Processor Time'), PeakCPU=maxif(CounterValue, CounterName =~ '% Processor Time'), FreeMiB=avgif(CounterValue, CounterName =~ 'Available Bytes') / 1048576.0, DiskMiB=avgif(CounterValue, CounterName =~ 'Disk Bytes/sec') / 1048576.0 by ID=tolower(_ResourceId)\n| project ['マシン']=tostring(split(ID, '/')[-1]), ['リソースグループ']=tostring(split(ID, '/')[4]), ['種類']=iff(ID contains '/microsoft.hybridcompute/', 'Arc', 'Azure VM'), ['平均 CPU (%)']=iff(isnan(CPU), real(null), round(CPU, 1)), ['ピーク CPU (%)']=round(PeakCPU, 1), ['平均空きメモリ (MiB)']=iff(isnan(FreeMiB), real(null), round(FreeMiB, 0)), ['平均ディスク (MiB/s)']=iff(isnan(DiskMiB), real(null), round(DiskMiB, 2))\n| order by ['平均 CPU (%)'] desc nulls last",
         "queryType": 0,
         "resourceType": "microsoft.operationalinsights/workspaces",
-        "crossComponentResources": ["LAW_RESOURCE_ID"],
-        "timeContext": { "durationMs": 86400000 },
+        "crossComponentResources": ["{Workspace}"],
+        "timeContextFromParameter": "TimeRange",
         "visualization": "table",
-        "noDataMessage": "過去24時間に対象 VM の Heartbeat がありません。LAW、AMA とリソース ID を確認してください。"
+        "gridSettings": {"filter": true},
+        "noDataMessage": "選択期間に対応する性能カウンターが届いていません。"
       }
     },
     {
       "type": 3,
       "name": "cpu",
       "customWidth": "50",
-      "conditionalVisibility": { "parameterName": "Section", "comparison": "isEqualTo", "value": "performance" },
+      "conditionalVisibility": {"parameterName": "Section", "comparison": "isEqualTo", "value": "performance"},
       "content": {
         "version": "KqlItem/1.0",
-        "title": "ゲスト OS の CPU 使用率 (%)：5分平均",
-        "query": "Perf\n| where _ResourceId in~ (\"AZURE_VM_RESOURCE_ID\", \"ARC_VM_RESOURCE_ID\")\n| where ObjectName =~ \"Processor Information\" and CounterName =~ \"% Processor Time\" and InstanceName =~ \"_Total\"\n| extend VM = strcat(iff(_ResourceId =~ \"ARC_VM_RESOURCE_ID\", \"Arc: \", \"Azure: \"), Computer)\n| summarize CpuPercent = avg(CounterValue) by bin(TimeGenerated, 5m), VM\n| order by TimeGenerated asc",
+        "title": "CPU 使用率 (%)：5分平均",
+        "query": "union isfuzzy=true Perf, (datatable(TimeGenerated:datetime, _ResourceId:string, ObjectName:string, CounterName:string, InstanceName:string, CounterValue:real) [])\n| where _ResourceId in~ ({Machines}) and ObjectName =~ 'Processor Information' and CounterName =~ '% Processor Time' and InstanceName =~ '_Total'\n| extend VM=strcat(tostring(split(_ResourceId, '/')[-1]), ' (', tostring(split(_ResourceId, '/')[4]), '/', iff(_ResourceId contains '/microsoft.hybridcompute/', 'Arc', 'Azure'), ')')\n| summarize CpuPercent=avg(CounterValue) by bin(TimeGenerated, 5m), VM\n| order by TimeGenerated asc",
         "queryType": 0,
         "resourceType": "microsoft.operationalinsights/workspaces",
-        "crossComponentResources": ["LAW_RESOURCE_ID"],
-        "timeContext": { "durationMs": 86400000 },
+        "crossComponentResources": ["{Workspace}"],
+        "timeContextFromParameter": "TimeRange",
         "visualization": "timechart",
-        "chartSettings": { "xAxis": "TimeGenerated", "yAxis": ["CpuPercent"], "group": "VM", "showLegend": true },
-        "noDataMessage": "対象 VM の CPU データがありません。性能用 DCR と LAW への取り込みを確認してください。"
+        "chartSettings": {"xAxis": "TimeGenerated", "yAxis": ["CpuPercent"], "group": "VM", "showLegend": true},
+        "noDataMessage": "CPU データがありません。"
       }
     },
     {
       "type": 3,
       "name": "memory",
       "customWidth": "50",
-      "conditionalVisibility": { "parameterName": "Section", "comparison": "isEqualTo", "value": "performance" },
+      "conditionalVisibility": {"parameterName": "Section", "comparison": "isEqualTo", "value": "performance"},
       "content": {
         "version": "KqlItem/1.0",
         "title": "利用可能なメモリ (MiB)：5分平均",
-        "query": "Perf\n| where _ResourceId in~ (\"AZURE_VM_RESOURCE_ID\", \"ARC_VM_RESOURCE_ID\")\n| where ObjectName =~ \"Memory\" and CounterName =~ \"Available Bytes\"\n| extend VM = strcat(iff(_ResourceId =~ \"ARC_VM_RESOURCE_ID\", \"Arc: \", \"Azure: \"), Computer)\n| summarize AvailableMemoryMiB = avg(CounterValue) / 1048576.0 by bin(TimeGenerated, 5m), VM\n| order by TimeGenerated asc",
+        "query": "union isfuzzy=true Perf, (datatable(TimeGenerated:datetime, _ResourceId:string, ObjectName:string, CounterName:string, CounterValue:real) [])\n| where _ResourceId in~ ({Machines}) and ObjectName =~ 'Memory' and CounterName =~ 'Available Bytes'\n| extend VM=strcat(tostring(split(_ResourceId, '/')[-1]), ' (', tostring(split(_ResourceId, '/')[4]), '/', iff(_ResourceId contains '/microsoft.hybridcompute/', 'Arc', 'Azure'), ')')\n| summarize FreeMiB=avg(CounterValue)/1048576.0 by bin(TimeGenerated, 5m), VM\n| order by TimeGenerated asc",
         "queryType": 0,
         "resourceType": "microsoft.operationalinsights/workspaces",
-        "crossComponentResources": ["LAW_RESOURCE_ID"],
-        "timeContext": { "durationMs": 86400000 },
+        "crossComponentResources": ["{Workspace}"],
+        "timeContextFromParameter": "TimeRange",
         "visualization": "timechart",
-        "chartSettings": { "xAxis": "TimeGenerated", "yAxis": ["AvailableMemoryMiB"], "group": "VM", "showLegend": true },
-        "noDataMessage": "対象 VM のメモリデータがありません。性能用 DCR と LAW への取り込みを確認してください。"
+        "chartSettings": {"xAxis": "TimeGenerated", "yAxis": ["FreeMiB"], "group": "VM", "showLegend": true},
+        "noDataMessage": "メモリデータがありません。"
+      }
+    },
+    {
+      "type": 3,
+      "name": "disk",
+      "customWidth": "50",
+      "conditionalVisibility": {"parameterName": "Section", "comparison": "isEqualTo", "value": "performance"},
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "ディスク読み書き合計 (MiB/s)：5分平均",
+        "query": "union isfuzzy=true Perf, (datatable(TimeGenerated:datetime, _ResourceId:string, ObjectName:string, CounterName:string, InstanceName:string, CounterValue:real) [])\n| where _ResourceId in~ ({Machines}) and ObjectName =~ 'LogicalDisk' and CounterName =~ 'Disk Bytes/sec' and InstanceName =~ '_Total'\n| extend VM=strcat(tostring(split(_ResourceId, '/')[-1]), ' (', tostring(split(_ResourceId, '/')[4]), '/', iff(_ResourceId contains '/microsoft.hybridcompute/', 'Arc', 'Azure'), ')')\n| summarize DiskMiBps=avg(CounterValue)/1048576.0 by bin(TimeGenerated, 5m), VM\n| order by TimeGenerated asc",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": ["{Workspace}"],
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "timechart",
+        "chartSettings": {"xAxis": "TimeGenerated", "yAxis": ["DiskMiBps"], "group": "VM", "showLegend": true},
+        "noDataMessage": "ディスク用のカウンターを収集していないか、選択期間にデータがありません。"
+      }
+    },
+    {
+      "type": 3,
+      "name": "network",
+      "customWidth": "50",
+      "conditionalVisibility": {"parameterName": "Section", "comparison": "isEqualTo", "value": "performance"},
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "ネットワーク送受信合計 (MiB/s)：NIC 別の5分平均",
+        "query": "union isfuzzy=true Perf, (datatable(TimeGenerated:datetime, _ResourceId:string, ObjectName:string, CounterName:string, InstanceName:string, CounterValue:real) [])\n| where _ResourceId in~ ({Machines}) and ObjectName =~ 'Network Interface' and CounterName =~ 'Bytes Total/sec' and InstanceName !~ '_Total'\n| extend NIC=strcat(tostring(split(_ResourceId, '/')[-1]), ' (', tostring(split(_ResourceId, '/')[4]), '/', iff(_ResourceId contains '/microsoft.hybridcompute/', 'Arc', 'Azure'), '): ', InstanceName)\n| summarize NetworkMiBps=avg(CounterValue)/1048576.0 by bin(TimeGenerated, 5m), NIC\n| order by TimeGenerated asc",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": ["{Workspace}"],
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "timechart",
+        "chartSettings": {"xAxis": "TimeGenerated", "yAxis": ["NetworkMiBps"], "group": "NIC", "showLegend": true},
+        "noDataMessage": "ネットワーク用のカウンターを収集していないか、選択期間にデータがありません。"
+      }
+    },
+    {
+      "type": 1,
+      "name": "event-help",
+      "conditionalVisibility": {"parameterName": "Section", "comparison": "isEqualTo", "value": "signals"},
+      "content": {"json": "### Windows イベント\n`Event` に取り込んだ行をチャネル・重大度・イベント ID で集計します。`SecurityEvent` に届く監査イベントは、重複計上しないよう別表で確認します。"}
+    },
+    {
+      "type": 3,
+      "name": "event-channels",
+      "customWidth": "50",
+      "conditionalVisibility": {"parameterName": "Section", "comparison": "isEqualTo", "value": "signals"},
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Windows イベント：チャネル別の割合",
+        "query": "union isfuzzy=true Event, (datatable(_ResourceId:string, EventLog:string) [])\n| where _ResourceId in~ ({Machines})\n| extend Channel=iff(isempty(EventLog), '不明', EventLog)\n| summarize Count=count() by Channel\n| order by Count desc",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": ["{Workspace}"],
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "piechart",
+        "chartSettings": {"xAxis": "Channel", "yAxis": ["Count"], "showLegend": true},
+        "noDataMessage": "選択期間に Event テーブルの該当レコードがありません。"
+      }
+    },
+    {
+      "type": 3,
+      "name": "event-severity",
+      "customWidth": "50",
+      "conditionalVisibility": {"parameterName": "Section", "comparison": "isEqualTo", "value": "signals"},
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "Windows イベント：重大度別の件数",
+        "query": "union isfuzzy=true Event, (datatable(_ResourceId:string) [])\n| where _ResourceId in~ ({Machines})\n| extend Code=toint(column_ifexists('EventLevel', int(null))), LevelName=tostring(column_ifexists('EventLevelName', ''))\n| extend Level=case(Code==1 or LevelName in~ ('Critical','重大'), '重大', Code==2 or LevelName in~ ('Error','エラー'), 'エラー', Code==3 or LevelName in~ ('Warning','警告'), '警告', Code==4 or LevelName in~ ('Information','Informational','情報'), '情報', Code==5 or LevelName in~ ('Verbose','詳細'), '詳細', 'その他・不明')\n| summarize Count=count() by Level\n| order by Count desc",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": ["{Workspace}"],
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "categoricalbar",
+        "chartSettings": {"xAxis": "Level", "yAxis": ["Count"]},
+        "noDataMessage": "選択期間に Event テーブルの該当レコードがありません。"
       }
     },
     {
       "type": 3,
       "name": "top-events",
-      "conditionalVisibility": { "parameterName": "Section", "comparison": "isEqualTo", "value": "signals" },
+      "conditionalVisibility": {"parameterName": "Section", "comparison": "isEqualTo", "value": "signals"},
       "content": {
         "version": "KqlItem/1.0",
-        "title": "収集した Windows イベントの上位10件",
-        "size": 4,
-        "query": "Event\n| where _ResourceId in~ (\"AZURE_VM_RESOURCE_ID\", \"ARC_VM_RESOURCE_ID\")\n| extend VM = strcat(iff(_ResourceId =~ \"ARC_VM_RESOURCE_ID\", \"Arc: \", \"Azure: \"), Computer)\n| summarize ['件数'] = count(), ['最終発生時刻'] = max(TimeGenerated) by VM, EventLog, Source, EventID\n| top 10 by ['件数'] desc",
+        "title": "Windows イベント：チャネル・ソース・イベント ID 別の上位10件",
+        "query": "union isfuzzy=true Event, (datatable(TimeGenerated:datetime, _ResourceId:string, EventLog:string, Source:string, EventID:int) [])\n| where _ResourceId in~ ({Machines})\n| summarize ['件数']=count(), ['マシン数']=dcount(tolower(_ResourceId)), ['最終発生時刻']=max(TimeGenerated) by ['チャネル']=iff(isempty(EventLog), '不明', EventLog), ['ソース']=Source, ['イベント ID']=EventID\n| top 10 by ['件数'] desc",
         "queryType": 0,
         "resourceType": "microsoft.operationalinsights/workspaces",
-        "crossComponentResources": ["LAW_RESOURCE_ID"],
-        "timeContext": { "durationMs": 86400000 },
+        "crossComponentResources": ["{Workspace}"],
+        "timeContextFromParameter": "TimeRange",
         "visualization": "table",
-        "noDataMessage": "過去24時間に対象 VM から収集したイベントがありません。"
+        "noDataMessage": "選択期間に Event テーブルの該当レコードがありません。"
+      }
+    },
+    {
+      "type": 3,
+      "name": "security-events",
+      "conditionalVisibility": {"parameterName": "Section", "comparison": "isEqualTo", "value": "signals"},
+      "content": {
+        "version": "KqlItem/1.0",
+        "title": "監査イベント：SecurityEvent テーブルの上位10件（別集計）",
+        "query": "union isfuzzy=true SecurityEvent, (datatable(TimeGenerated:datetime, _ResourceId:string) [])\n| where _ResourceId in~ ({Machines})\n| extend ID=toint(column_ifexists('EventID', int(null))), ActivityName=tostring(column_ifexists('Activity', ''))\n| summarize ['件数']=count(), ['最終発生時刻']=max(TimeGenerated) by ['イベント ID']=ID, ['操作']=ActivityName\n| top 10 by ['件数'] desc",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": ["{Workspace}"],
+        "timeContextFromParameter": "TimeRange",
+        "visualization": "table",
+        "noDataMessage": "SecurityEvent テーブルがないか、選択期間・対象に該当する監査イベントはありません。"
       }
     },
     {
       "type": 3,
       "name": "alerts",
-      "conditionalVisibility": { "parameterName": "Section", "comparison": "isEqualTo", "value": "signals" },
+      "conditionalVisibility": {"parameterName": "Section", "comparison": "isEqualTo", "value": "signals"},
       "content": {
         "version": "KqlItem/1.0",
-        "title": "関連するログ検索アラート",
-        "size": 4,
-        "query": "alertsmanagementresources\n| where type =~ \"microsoft.alertsmanagement/alerts\"\n| extend StartedAt = todatetime(properties.essentials.startDateTime), Target = tostring(properties.essentials.targetResource), Rule = tostring(properties.essentials.alertRule)\n| where StartedAt >= ago(24h)\n| where Target in~ (\"LAW_RESOURCE_ID\", \"AZURE_VM_RESOURCE_ID\", \"ARC_VM_RESOURCE_ID\")\n| where name =~ \"alert-arclab-event9001\" or Rule endswith \"/alert-arclab-event9001\"\n| project StartedAt, name, Severity = tostring(properties.essentials.severity), Condition = tostring(properties.essentials.monitorCondition), Dimensions = properties.context.context.condition.allOf[0].dimensions, Target, AlertId = id\n| order by StartedAt desc",
+        "title": "アラートの発生履歴：マシン対象とワークスペース対象",
+        "query": "alertsmanagementresources\n| where type =~ 'microsoft.alertsmanagement/alerts'\n| extend StartedAt=todatetime(properties.essentials.startDateTime), Target=tostring(properties.essentials.targetResource)\n| where StartedAt {TimeRange:query}\n| where Target =~ '{Workspace}' or Target in~ ({Machines})\n| project StartedAt, ['対象区分']=iff(Target =~ '{Workspace}', 'ワークスペース全体', '選択したマシン'), name, Severity=tostring(properties.essentials.severity), Condition=tostring(properties.essentials.monitorCondition), Dimensions=properties.context.context.condition.allOf[0].dimensions, Target\n| order by StartedAt desc",
         "queryType": 1,
         "resourceType": "microsoft.resourcegraph/resources",
-        "crossComponentResources": ["/subscriptions/LAB_SUBSCRIPTION_ID"],
+        "crossComponentResources": ["{Subscription}"],
         "visualization": "table",
-        "noDataMessage": "過去24時間に対象のアラートは発生していません。規則名とスコープも確認してください。"
+        "gridSettings": {"filter": true},
+        "noDataMessage": "選択した期間・対象のアラートはありません。"
       }
     },
     {
       "type": 3,
-      "name": "azure-os",
-      "customWidth": "50",
-      "conditionalVisibility": { "parameterName": "Section", "comparison": "isEqualTo", "value": "inventory" },
+      "name": "machine-state",
+      "conditionalVisibility": {"parameterName": "Section", "comparison": "isEqualTo", "value": "inventory"},
       "content": {
         "version": "KqlItem/1.0",
-        "title": "Azure VM：ゲスト OS と電源状態",
-        "size": 4,
-        "query": "{\"version\":\"ARMEndpoint/1.0\",\"data\":null,\"headers\":[],\"method\":\"GET\",\"path\":\"AZURE_VM_RESOURCE_ID/instanceView\",\"urlParams\":[{\"key\":\"api-version\",\"value\":\"2024-07-01\"}],\"batchDisabled\":false,\"transformers\":[{\"type\":\"jsonpath\",\"settings\":{\"tablePath\":\"$\",\"columns\":[{\"path\":\"$.osName\",\"columnid\":\"OS\"},{\"path\":\"$.osVersion\",\"columnid\":\"OS バージョン\"},{\"path\":\"$.statuses[?(@.code =~ /^PowerState/)].displayStatus\",\"columnid\":\"電源状態\"}]}}]}",
-        "queryType": 12,
-        "visualization": "table",
-        "noDataMessage": "Azure VM のインスタンス ビューに情報がありません。"
+        "title": "Azure VM の電源状態と Arc の接続状態",
+        "query": "Resources\n| where id in~ ({Machines})\n| extend Arc=type =~ 'microsoft.hybridcompute/machines'\n| project ['マシン']=name, ['リソースグループ']=resourceGroup, ['種類']=iff(Arc, 'Arc', 'Azure VM'), ['リージョン']=location, OS=iff(Arc, tostring(properties.osName), tostring(properties.storageProfile.osDisk.osType)), ['Arc OS バージョン']=tostring(properties.osVersion), ['電源・接続状態']=iff(Arc, tostring(properties.status), tostring(properties.extended.instanceView.powerState.code))\n| order by ['マシン'] asc",
+        "queryType": 1,
+        "resourceType": "microsoft.resourcegraph/resources",
+        "crossComponentResources": ["{Subscription}"],
+        "visualization": "table"
       }
     },
     {
       "type": 3,
-      "name": "arc-os",
-      "customWidth": "50",
-      "conditionalVisibility": { "parameterName": "Section", "comparison": "isEqualTo", "value": "inventory" },
+      "name": "guest-os",
+      "conditionalVisibility": {"parameterName": "Section", "comparison": "isEqualTo", "value": "inventory"},
       "content": {
         "version": "KqlItem/1.0",
-        "title": "Arc マシン：OS と Arc 接続状態",
-        "size": 4,
-        "query": "Resources\n| where type =~ \"microsoft.hybridcompute/machines\" and id =~ \"ARC_VM_RESOURCE_ID\"\n| project ['マシン'] = name, OS = tostring(properties.osName), ['OS バージョン'] = tostring(properties.osVersion), ['Arc 接続状態'] = tostring(properties.status)",
-        "queryType": 1,
-        "resourceType": "microsoft.resourcegraph/resources",
-        "crossComponentResources": ["/subscriptions/LAB_SUBSCRIPTION_ID"],
+        "title": "Heartbeat が報告したゲスト OS とバージョン",
+        "query": "Heartbeat\n| where _ResourceId in~ ({Machines})\n| summarize arg_max(TimeGenerated, Computer, OSName, OSMajorVersion, OSMinorVersion, ComputerPrivateIPs) by ID=tolower(_ResourceId)\n| project Computer, ['リソースグループ']=tostring(split(ID, '/')[4]), ['種類']=iff(ID contains '/microsoft.hybridcompute/', 'Arc', 'Azure VM'), OSName, ['OS バージョン']=strcat(OSMajorVersion, '.', OSMinorVersion), ['報告されたプライベート IP']=ComputerPrivateIPs, ['最終報告']=TimeGenerated\n| order by Computer asc",
+        "queryType": 0,
+        "resourceType": "microsoft.operationalinsights/workspaces",
+        "crossComponentResources": ["{Workspace}"],
+        "timeContextFromParameter": "TimeRange",
         "visualization": "table",
-        "noDataMessage": "対象の Arc マシンが見つかりません。サブスクリプション、リソース ID と閲覧権限を確認してください。"
+        "noDataMessage": "選択したワークスペース・期間に Heartbeat がありません。"
       }
     },
     {
       "type": 3,
       "name": "azure-ip",
-      "customWidth": "50",
-      "conditionalVisibility": { "parameterName": "Section", "comparison": "isEqualTo", "value": "inventory" },
+      "conditionalVisibility": {"parameterName": "Section", "comparison": "isEqualTo", "value": "inventory"},
       "content": {
         "version": "KqlItem/1.0",
         "title": "Azure VM：NIC のプライベート IP",
-        "size": 4,
-        "query": "Resources\n| where type =~ 'microsoft.network/networkinterfaces'\n| where tostring(properties.virtualMachine.id) =~ 'AZURE_VM_RESOURCE_ID'\n| mv-expand Configuration=properties.ipConfigurations\n| project NIC=name, ['IP アドレス']=tostring(Configuration.properties.privateIPAddress), ['IP バージョン']=tostring(Configuration.properties.privateIPAddressVersion), ['サブネット']=tostring(split(tostring(Configuration.properties.subnet.id), '/')[-1])\n| where isnotempty(['IP アドレス'])\n| order by NIC asc, ['IP アドレス'] asc",
+        "query": "Resources\n| where type =~ 'microsoft.network/networkinterfaces'\n| extend VMID=tostring(properties.virtualMachine.id)\n| where VMID in~ ({Machines})\n| mv-expand Configuration=properties.ipConfigurations\n| project ['マシン']=tostring(split(VMID, '/')[-1]), ['リソースグループ']=tostring(split(VMID, '/')[4]), NIC=name, ['IP アドレス']=tostring(Configuration.properties.privateIPAddress), ['IP バージョン']=tostring(Configuration.properties.privateIPAddressVersion), ['サブネット']=tostring(split(tostring(Configuration.properties.subnet.id), '/')[-1])\n| where isnotempty(['IP アドレス'])\n| order by ['マシン'] asc, NIC asc",
         "queryType": 1,
         "resourceType": "microsoft.resourcegraph/resources",
-        "crossComponentResources": ["/subscriptions/LAB_SUBSCRIPTION_ID"],
+        "crossComponentResources": ["{Subscription}"],
         "visualization": "table",
-        "noDataMessage": "対象 VM の NIC からプライベート IP を取得できません。VM のリソース ID と NIC の閲覧権限を確認してください。"
-      }
-    },
-    {
-      "type": 3,
-      "name": "arc-ip",
-      "customWidth": "50",
-      "conditionalVisibility": { "parameterName": "Section", "comparison": "isEqualTo", "value": "inventory" },
-      "content": {
-        "version": "KqlItem/1.0",
-        "title": "Arc マシン：報告された IP アドレス",
-        "size": 4,
-        "query": "{\"version\":\"ARMEndpoint/1.0\",\"data\":null,\"headers\":[],\"method\":\"GET\",\"path\":\"ARC_VM_RESOURCE_ID\",\"urlParams\":[{\"key\":\"api-version\",\"value\":\"2025-01-13\"}],\"batchDisabled\":false,\"transformers\":[{\"type\":\"jsonpath\",\"settings\":{\"tablePath\":\"$.properties.networkProfile.networkInterfaces[*].ipAddresses[*]\",\"columns\":[{\"path\":\"$.address\",\"columnid\":\"IP アドレス\"},{\"path\":\"$.ipAddressVersion\",\"columnid\":\"IP バージョン\"},{\"path\":\"$.subnet.addressPrefix\",\"columnid\":\"サブネット\"}]}}]}",
-        "queryType": 12,
-        "visualization": "table",
-        "noDataMessage": "Arc マシンのネットワークプロファイルに IP アドレスがありません。"
+        "noDataMessage": "選択対象に Azure VM の NIC がありません。"
       }
     }
   ],
-  "layout": { "type": "flow" },
-  "fallbackResourceIds": ["Azure Monitor"],
   "$schema": "https://github.com/Microsoft/Application-Insights-Workbooks/blob/master/schema/workbook.json"
 }
