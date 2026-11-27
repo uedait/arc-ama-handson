@@ -1,6 +1,6 @@
-# Optional：Windows イベントの Critical を1件以上検知するアラート
+# 4.5 Windows イベントの Critical を1件以上検知するアラート
 
-[README](../README.md) | [Step1：Azure VM のログ収集](02-azure.md) | [Step2：オンプレミス VM のログ収集](03-onpremises.md)
+[4. オプション](04-optional.md) | [Step1：Azure VM のログ収集](02-azure.md) | [Step2：オンプレミス VM のログ収集](03-onpremises.md)
 
 Windows イベント ログの Critical（重大）を、Event ID や Source を限定せずに検知するログ検索アラートを追加します。既存の Event ID `9001` のアラートは残し、同じ Log Analytics ワークスペース（LAW）とメール通知用アクショングループを使用します。
 
@@ -33,7 +33,7 @@ Windows イベントの Critical は数値のレベル `1` です。アラート
 | 既存アクショングループ | `ag-arclab-mail` |
 | アラート規則のリージョン | LAW と同じ。例は Japan East |
 
-## 5-1. Critical 用のログ検索アラートをデプロイする
+## 1. Critical 用のログ検索アラートをデプロイする
 
 1. LAW の「アラート」から「作成 → アラート規則」を選択します。既存の `alert-arclab-event9001` は編集しません。
 2. 「スコープ」が既存 LAW `law-arclab`（`Microsoft.OperationalInsights/workspaces`）であることを確認します。
@@ -98,7 +98,7 @@ Windows イベントの Critical は数値のレベル `1` です。アラート
 
 確認してみよう。既存の `9001` 用規則と新しい Critical 用規則が、別々に有効になっていますか。
 
-## 5-2. Portal のアラートとメール通知を確認する
+## 2. Portal のアラートとメール通知を確認する
 
 1. Portal の「モニター → アラート」で、対象サブスクリプション、RG、時間範囲、重大度「0：重大」で絞り込みます。
 2. Critical の発生後、取り込みと5分間隔の評価を待ち、`alert-arclab-windows-critical` のアラートを開きます。
@@ -116,7 +116,7 @@ Windows イベントの Critical は数値のレベル `1` です。アラート
 
 最後の Critical が15分の検索範囲から外れ、その後の5分間隔の評価で3回連続して条件を満たさなくなると自動解決します。ログの取り込み、評価、通知の時間も考慮してください。イベント1件ごとの再通知が要件であれば、本章とは別に通知方式を設計します。[^3]
 
-## 5-3. 演習後の扱い
+## 3. 演習後の扱い
 
 - 継続運用する場合は、通知先、重大度、検索期間、担当者を確認してください。
 - 演習用の規則が不要になった場合は、`alert-arclab-windows-critical` だけを無効化または削除します。
